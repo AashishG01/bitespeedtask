@@ -5,7 +5,15 @@ export const identifyService = async (
   phoneNumber?: string
 ) => {
 
-  // 1 Find matching contacts
+  
+  // STEP 1 — Find contacts matching incoming email or phone
+  // We search for any contact where:
+  //  - email matches OR
+  //  - phoneNumber matches
+  // Only active (not soft-deleted) contacts
+  // Ordered by createdAt so oldest comes first
+
+
   let matchedContacts = await prisma.contact.findMany({
     where: {
       OR: [
@@ -19,8 +27,11 @@ export const identifyService = async (
     },
   });
 
+
  
-  // CASE 1 — No match → create primary
+  //  No matching contact found
+  // This means it's a completely new customer
+  // So we create a PRIMARY contact
 
 
   if (matchedContacts.length === 0) {
@@ -43,11 +54,18 @@ export const identifyService = async (
   }
 
 
-  // STAGE 3 — PRIMARY MERGE LOGIC
+
+  // PRIMARY MERGE LOGIC
+  // If multiple primary groups are connected via this request,
+  // we must merge them into one identity cluster.
 
 
   const primaryIds = new Set<number>();
 
+  // Collect all primary IDs involved
+  // If a matched contact is:
+  //  - primary → add its id
+  //  - secondary → add its linkedId (its primary)
   for (const contact of matchedContacts) {
     if (contact.linkPrecedence === "primary") {
       primaryIds.add(contact.id);
@@ -56,6 +74,7 @@ export const identifyService = async (
     }
   }
 
+  // Fetch all those primary contacts sorted by oldest first
   const primaries = await prisma.contact.findMany({
     where: {
       id: { in: Array.from(primaryIds) },
@@ -65,11 +84,16 @@ export const identifyService = async (
     },
   });
 
+  // If more than one primary exists → merge them
   if (primaries.length > 1) {
-    const oldestPrimary = primaries[0];
+
+    const oldestPrimary = primaries[0]; // Oldest wins
     const otherPrimaryIds = primaries.slice(1).map(p => p.id);
 
+    // Use transaction to ensure atomic merge
     await prisma.$transaction(async (tx) => {
+
+      // Convert newer primaries into secondary
       await tx.contact.updateMany({
         where: { id: { in: otherPrimaryIds } },
         data: {
@@ -78,6 +102,7 @@ export const identifyService = async (
         },
       });
 
+      // Re-link their secondaries to oldest primary
       await tx.contact.updateMany({
         where: { linkedId: { in: otherPrimaryIds } },
         data: {
@@ -86,6 +111,7 @@ export const identifyService = async (
       });
     });
 
+    // After merge, reload full identity cluster
     matchedContacts = await prisma.contact.findMany({
       where: {
         OR: [
@@ -100,13 +126,18 @@ export const identifyService = async (
   }
 
 
-  // STAGE 2 — Create secondary if new info
+
+  // STAGE 2 — Create secondary contact if new information arrives
+  // If email or phone is new within identity cluster,
+  // we create a new secondary record.
 
 
+  // Identify the primary contact in current cluster
   const primary =
     matchedContacts.find(c => c.linkPrecedence === "primary") ||
     matchedContacts[0];
 
+  // Collect existing emails & phones in identity cluster
   const existingEmails = new Set(
     matchedContacts.map(c => c.email).filter(Boolean)
   );
@@ -115,9 +146,11 @@ export const identifyService = async (
     matchedContacts.map(c => c.phoneNumber).filter(Boolean)
   );
 
+  // Check whether incoming values are new
   const isNewEmail = email && !existingEmails.has(email);
   const isNewPhone = phoneNumber && !existingPhones.has(phoneNumber);
 
+  // If at least one new piece of information exists → create secondary
   if (isNewEmail || isNewPhone) {
     await prisma.contact.create({
       data: {
@@ -131,6 +164,8 @@ export const identifyService = async (
 
 
   // FINAL RESPONSE BUILDER
+  // Fetch full identity cluster and build response format
+
 
   const finalContacts = await prisma.contact.findMany({
     where: {
@@ -144,10 +179,14 @@ export const identifyService = async (
     },
   });
 
+  // Find primary contact
   const primaryContact = finalContacts.find(
     c => c.linkPrecedence === "primary"
   )!;
 
+  // Build emails array
+  // Primary email must be first
+  // Remove duplicates
   const emails = [
     primaryContact.email,
     ...finalContacts
@@ -155,6 +194,7 @@ export const identifyService = async (
       .map(c => c.email),
   ].filter((v, i, arr) => v && arr.indexOf(v) === i);
 
+  // Build phone numbers array
   const phoneNumbers = [
     primaryContact.phoneNumber,
     ...finalContacts
@@ -162,10 +202,12 @@ export const identifyService = async (
       .map(c => c.phoneNumber),
   ].filter((v, i, arr) => v && arr.indexOf(v) === i);
 
+  // Collect all secondary contact IDs
   const secondaryContactIds = finalContacts
     .filter(c => c.linkPrecedence === "secondary")
     .map(c => c.id);
 
+  // Final structured response
   return {
     contact: {
       primaryContatctId: primary.id,
