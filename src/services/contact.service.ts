@@ -5,7 +5,7 @@ export const identifyService = async (
   phoneNumber?: string
 ) => {
 
-  
+
   // STEP 1 — Find contacts matching incoming email or phone
   // We search for any contact where:
   //  - email matches OR
@@ -28,7 +28,7 @@ export const identifyService = async (
   });
 
 
- 
+
   //  No matching contact found
   // This means it's a completely new customer
   // So we create a PRIMARY contact
@@ -45,7 +45,7 @@ export const identifyService = async (
 
     return {
       contact: {
-        primaryContatctId: newPrimary.id,
+        primaryContactId: newPrimary.id,
         emails: email ? [email] : [],
         phoneNumbers: phoneNumber ? [phoneNumber] : [],
         secondaryContactIds: [],
@@ -210,7 +210,7 @@ export const identifyService = async (
   // Final structured response
   return {
     contact: {
-      primaryContatctId: primary.id,
+      primaryContactId: primary.id,
       emails,
       phoneNumbers,
       secondaryContactIds,
